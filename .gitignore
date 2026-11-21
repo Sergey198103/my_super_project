@@ -1,0 +1,6 @@
+.env
+
+# MCP Server secrets and build artifacts
+mcp-server/.env
+mcp-server/node_modules/
+mcp-server/build/
