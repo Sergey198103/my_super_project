@@ -15,9 +15,9 @@ app.use(express.json());
 const OLLAMA_HOST = "http://100.89.188.65:11434";
 const ollama = new Ollama({ host: OLLAMA_HOST });
 
-const EMAIL_USER = process.env.EMAIL_USER || "";
-const EMAIL_PASS = process.env.EMAIL_PASS || "";
-const EMAIL_HOST = process.env.EMAIL_HOST || "imap.mail.ru";
+const EMAIL_USER = process.env.MAIL_USER || process.env.EMAIL_USER || "";
+const EMAIL_PASS = process.env.MAIL_PASSWORD || process.env.EMAIL_PASS || "";
+const EMAIL_HOST = process.env.IMAP_SERVER || process.env.EMAIL_HOST || "imap.mail.ru";
 
 async function checkRecentEmails(count: number) {
     console.log(`[DEBUG] Запуск инструмента list_recent_emails (count: ${count})`);
@@ -37,16 +37,21 @@ async function checkRecentEmails(count: number) {
         const total = status?.messages || 0;
         const start = Math.max(1, total - count + 1);
         const sequence = `${start}:*`;
-        
+
         const messages = [];
-        for await (const message of client.fetch(sequence, { envelope: true })) {
+        console.log(`[DEBUG] Fetching sequence: ${sequence}`);
+        for await (const message of client.fetch(sequence, { envelope: true, uid: true })) {
+            console.log(`[DEBUG] Получено письмо UID: ${message.uid}`);
             messages.push({
+                uid: message.uid,
                 from: message.envelope?.from?.[0]?.address || 'Неизвестно',
                 subject: message.envelope?.subject || 'Без темы',
                 date: message.envelope?.date ? new Date(message.envelope.date).toLocaleString('ru-RU') : 'Неизвестно'
             });
         }
+        console.log(`[DEBUG] Всего получено писем: ${messages.length}`);
         return messages.reverse();
+        
     } finally {
         lock.release();
         await client.logout();
@@ -136,9 +141,77 @@ app.post('/check-mail', async (req: Request, res: Response) => {
     }
 });
 
+app.post('/analyze-mail', async (req: Request, res: Response) => {
+    try {
+        const emails = await checkRecentEmails(10);
+        const emailText = emails.map((e) => `UID: ${e.uid}\nОт: ${e.from}\nТема: ${e.subject}\nДата: ${e.date}`).join('\n---\n');
+
+        const response: any = await ollama.chat({
+            model: 'qwen-local:latest',
+            messages: [
+                {
+                    role: 'system',
+                    content: 'Ты строгий помощник. Проанализируй список писем. Раздели их на "Полезные" и "Спам/Реклама". Верни ответ СТРОГО в формате JSON с полями: "summary" (краткая сводка полезных дел, 2-3 предложения), "spam" (массив объектов вида {"uid": число, "from": "отправитель", "subject": "тема", "reason": "кратко почему это спам, 1 предложение"}). Не выдумывай UID, бери только из списка.'
+                },
+                {
+                    role: 'user',
+                    content: `Вот список писем:\n${emailText}`
+                }
+            ]
+        });
+
+        let result;
+        try {
+            const jsonMatch = response.message.content.match(/\{[\s\S]*\}/);
+            const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+            result = parsed || { summary: response.message.content, spam: [] };
+            if (!result.summary) result.summary = "Сводка не сформирована.";
+            if (!Array.isArray(result.spam)) result.spam = [];
+        } catch (e) {
+            result = { summary: "Не удалось распарсить ответ модели.", spam: [] };
+        }
+
+        res.json({ status: 'success', data: result });
+    } catch (error: any) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+app.post('/delete-mails', async (req: Request, res: Response) => {
+    try {
+        const { uids } = req.body;
+        if (!uids || !Array.isArray(uids) || uids.length === 0) {
+            return res.status(400).json({ status: 'error', message: 'Не переданы UID для удаления' });
+        }
+
+        const client = new ImapFlow({
+            host: process.env.IMAP_SERVER || process.env.EMAIL_HOST || 'imap.mail.ru',
+            port: 993,
+            secure: true,
+            auth: { 
+                user: (process.env.MAIL_USER || process.env.EMAIL_USER || ""), 
+                pass: (process.env.MAIL_PASSWORD || process.env.EMAIL_PASS || "")
+            }
+        });
+
+        await client.connect();
+        const lock = await client.getMailboxLock('INBOX');
+        try {
+            for (const uid of uids) {
+                await client.messageDelete({ uid: uid });
+            }
+            res.json({ status: 'success', message: `Удалено писем: ${uids.length}` });
+        } finally {
+            lock.release();
+            await client.logout();
+        }
+    } catch (error: any) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
-process.env.GLOBAL_AGENT_HTTP_PROXY = 'socks5://127.0.0.1:1080';
-process.env.GLOBAL_AGENT_HTTPS_PROXY = 'socks5://127.0.0.1:1080';
+
 app.listen(PORT, () => {
     console.log(`🚀 Оркестратор запущен и слушает порт ${PORT}. Жду команд.`);
 });

@@ -1,4 +1,13 @@
 services:
+  bot:
+    build: .
+    container_name: petrovich-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: host
+    command: npm run start:bot
+
   orchestrator:
     build: .
     container_name: petrovich-orchestrator
@@ -6,4 +15,4 @@ services:
     env_file:
       - .env
     network_mode: host
-    command: npm run start:bot
+    command: node build/orchestrator.js
