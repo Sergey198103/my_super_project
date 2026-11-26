@@ -2,6 +2,10 @@ import { Ollama } from 'ollama';
 import { ImapFlow } from 'imapflow';
 import express, { Request, Response } from 'express';
 import * as dotenv from 'dotenv';
+import { bootstrap } from 'global-agent';
+bootstrap();
+process.env.GLOBAL_AGENT_HTTP_PROXY = 'socks5://127.0.0.1:1080';
+process.env.GLOBAL_AGENT_HTTPS_PROXY = 'socks5://127.0.0.1:1080';
 
 dotenv.config();
 
@@ -65,15 +69,20 @@ const tools = [{
 
 async function runOrchestrator() {
     console.log("🧠 Отправляем запрос в Ollama...");
-    const response: any = await ollama.chat({
-        model: 'qwen-local:latest',
-        messages: [{ 
-            role: 'user', 
-            content: 'Проверь последние 3 письма на почте и кратко перескажи их темы и отправителей. Не выдумывай данные.' 
-        }],
-        tools: tools
-    });
-
+const response: any = await ollama.chat({
+    model: 'qwen-local:latest',
+    messages: [
+        {
+            role: 'system',
+            content: 'Ты строгий технический ассистент. Ты никогда не выдумываешь код, факты или данные. Для получения информации о почте ты обязан использовать только предоставленный инструмент list_recent_emails. Отвечай максимально кратко и только по делу.'
+        },
+        {
+            role: 'user',
+            content: 'Проверь последние 3 письма на почте и кратко перескажи их темы и отправителей. Не выдумывай данные.'
+        }
+    ],
+    tools: tools
+});
     console.log("📩 Сырой ответ от модели:", response.message.content || "tool_calls");
 
     let toolCall = response.message.tool_calls?.[0];
@@ -128,6 +137,8 @@ app.post('/check-mail', async (req: Request, res: Response) => {
 });
 
 const PORT = process.env.PORT || 3000;
+process.env.GLOBAL_AGENT_HTTP_PROXY = 'socks5://127.0.0.1:1080';
+process.env.GLOBAL_AGENT_HTTPS_PROXY = 'socks5://127.0.0.1:1080';
 app.listen(PORT, () => {
     console.log(`🚀 Оркестратор запущен и слушает порт ${PORT}. Жду команд.`);
 });
